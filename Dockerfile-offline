@@ -1,0 +1,26 @@
+FROM libafl-base
+
+# cargo-make dependency for example fuzzers
+RUN cargo install --no-default-features --force cargo-make
+
+# Install necessary cross compiler for libafl_qemu (if needed)
+WORKDIR /
+RUN apt update && apt install -y ninja-build libc6-dev-armel-cross
+RUN wget -qO- https://musl.cc/arm-linux-musleabihf-cross.tgz | tar xzf -
+
+# Copy in missing file for libafl_qemu
+COPY libafl_qemu/ /libafl/libafl_qemu
+ENV CROSS_CC=/arm-linux-musleabihf-cross/bin/arm-linux-musleabihf-gcc
+RUN cd libafl/libafl_qemu && cargo build --release -F usermode,arm
+
+# Download crates
+WORKDIR /libafl
+RUN cargo vendor /libafl-cargo >> ~/.cargo/config.toml
+
+# Pull down qemu fork
+RUN git clone https://github.com/AFLplusplus/qemu-libafl-bridge /qemu-libafl-bridge
+RUN cd /qemu-libafl-bridge && scripts/git-submodule.sh update \ 
+	ui/keycodemapdb meson tests/fp/berkeley-testfloat-3 tests/fp/berkeley-softfloat-3
+ENV CUSTOM_QEMU_DIR /qemu-libafl-bridge
+
+# When building fuzzers, use `cargo build --offline`

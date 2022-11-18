@@ -28,6 +28,10 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <unistd.h>
 #include <sys/syscall.h>
 
+// Bandaid, fails to compile
+struct _IO_FILE { char __x; };
+typedef struct _IO_FILE FILE;
+
 char *(*__lq_libc_fgets)(char *, int, FILE *);
 int (*__lq_libc_atoi)(const char *);
 long (*__lq_libc_atol)(const char *);
