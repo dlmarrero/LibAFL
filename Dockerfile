@@ -68,7 +68,7 @@ COPY scripts/dummy.rs libafl_nyx/src/lib.rs
 
 COPY utils utils
 
-RUN cargo build && cargo build --release
+RUN CC=gcc cargo build && CC=gcc cargo build --release
 
 COPY scripts scripts
 COPY docs docs
@@ -99,7 +99,7 @@ COPY libafl_concolic/symcc_runtime libafl_concolic/symcc_runtime
 COPY libafl_concolic/test libafl_concolic/test
 COPY libafl_nyx/src libafl_nyx/src
 RUN touch libafl_nyx/src/lib.rs
-RUN cargo build && cargo build --release
+RUN CC=gcc cargo build && CC=gcc cargo build --release
 
 # Copy fuzzers over
 COPY fuzzers fuzzers
