@@ -1,0 +1,18 @@
+FROM libafl-offline
+
+# "vscode -> About" on offline box to get commit id
+ARG commit_id=6261075646f055b99068d3688932416f2346dd3b
+
+WORKDIR /
+RUN wget -qO- https://update.code.visualstudio.com/commit:$commit_id/server-linux-x64/stable | tar xzf -
+RUN mkdir -p /vscode/vscode-server/bin/linux-x64 && \
+    mv /vscode-server-linux-x64 /vscode/vscode-server/bin/linux-x64/$commit_id
+
+COPY .devcontainer/assets/*.vsix /vscode-ext/
+RUN for f in `ls /vscode-ext`; do \
+    /vscode/vscode-server/bin/linux-x64/$commit_id/bin/code-server \
+    --install-extension "/vscode-ext/$f"; \
+    done
+
+RUN rustup component add rust-src
+RUN printf "\n[net]\noffline=true\n\n" >> /root/.cargo/config

@@ -7,7 +7,12 @@ echo
 
 echo "[*] Making sure all Nyx is checked out"
 
+cleanup=false
 git status 1>/dev/null 2>/dev/null
+if [[ "$?" -ne 0 ]]; then
+    git init &> /dev/null
+    cleanup=true
+fi
 
 if [ ! -d ./QEMU-Nyx ]; then
     git clone https://github.com/nyx-fuzz/QEMU-Nyx.git || exit 1
@@ -46,6 +51,10 @@ if [ ! -f "QEMU-Nyx/x86_64-softmmu/qemu-system-x86_64" ]; then
     cd QEMU-Nyx/ || return
     ./compile_qemu_nyx.sh static || exit 1
     cd ..
+fi
+
+if [ $cleanup = true ]; then
+    rm -rf .git
 fi
 
 echo "[+] All done for nyx_mode, enjoy!"
