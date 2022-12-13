@@ -25,6 +25,9 @@ ENV CUSTOM_QEMU_DIR /qemu-libafl-bridge
 ENV CROSS_CC=/arm-linux-musleabihf-cross/bin/arm-linux-musleabihf-gcc
 RUN cd libafl/libafl_qemu && CC=gcc cargo build --release -F usermode,arm
 
+# Prevent qemu build from messing up build cache
+ENV CUSTOM_QEMU_NO_BUILD=1
+
 # Download crates
 WORKDIR /libafl
 RUN cargo vendor /libafl-cargo >> ~/.cargo/config.toml

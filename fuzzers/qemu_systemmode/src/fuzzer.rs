@@ -16,8 +16,7 @@ use libafl::{
     corpus::{Corpus, InMemoryCorpus, OnDiskCorpus},
     events::EventConfig,
     executors::{ExitKind, TimeoutExecutor},
-    feedback_or,
-    feedback_or_fast,
+    feedback_or, feedback_or_fast,
     feedbacks::{CrashFeedback, MaxMapFeedback, TimeFeedback, TimeoutFeedback},
     fuzzer::{Fuzzer, StdFuzzer},
     inputs::{BytesInput, HasTargetBytes},
@@ -28,11 +27,10 @@ use libafl::{
     stages::StdMutationalStage,
     state::{HasCorpus, StdState},
     Error,
-    //prelude::{SimpleMonitor, SimpleEventManager},
 };
 use libafl_qemu::{
-    edges, edges::QemuEdgeCoverageHelper, elf::EasyElf, emu::Emulator, QemuExecutor, QemuHooks,
-    Regs,
+    edges, edges::QemuEdgeCoverageHelper, elf::EasyElf, emu::Emulator, GuestPhysAddr, QemuExecutor,
+    QemuHooks, Regs,
 };
 
 pub static mut MAX_INPUT_SIZE: usize = 50;
@@ -60,7 +58,7 @@ pub fn fuzz() {
             &env::var("FUZZ_INPUT").unwrap_or_else(|_| "FUZZ_INPUT".to_owned()),
             0,
         )
-        .expect("Symbol or env FUZZ_INPUT not found");
+        .expect("Symbol or env FUZZ_INPUT not found") as GuestPhysAddr;
     println!("FUZZ_INPUT @ {:#x}", input_addr);
 
     let main_addr = elf
@@ -88,20 +86,15 @@ pub fn fuzz() {
         }
         emu.remove_breakpoint(main_addr);
 
-        emu.save_snapshot("start", true);
-
         emu.set_breakpoint(breakpoint); // BREAKPOINT
 
-        //use libafl_qemu::IntoEnumIterator;
-        // Save the GPRs
-        //let mut saved_regs: Vec<u64> = vec![];
-        //for r in Regs::iter() {
-        //    saved_regs.push(emu.cpu_from_index(0).read_reg(r).unwrap());
-        //}
+        // let saved_cpu_states: Vec<_> = (0..emu.num_cpus())
+        //     .map(|i| emu.cpu_from_index(i).save_state())
+        //     .collect();
 
-        let saved_cpu_states: Vec<_> = (0..emu.num_cpus())
-            .map(|i| emu.cpu_from_index(i).save_state())
-            .collect();
+        // emu.save_snapshot("start", true);
+
+        let snap = emu.create_fast_snapshot(true);
 
         // The wrapped harness function, calling out to the LLVM-style harness
         let mut harness = |input: &BytesInput| {
@@ -113,10 +106,6 @@ pub fn fuzz() {
                     buf = &buf[0..MAX_INPUT_SIZE];
                     // len = MAX_INPUT_SIZE;
                 }
-
-                //for (r, v) in saved_regs.iter().enumerate() {
-                //    emu.cpu_from_index(0).write_reg(r as i32, *v).unwrap();
-                //}
 
                 emu.write_phys_mem(input_addr, buf);
 
@@ -133,11 +122,16 @@ pub fn fuzz() {
                     None => ExitKind::Crash,
                 };
 
-                for (i, s) in saved_cpu_states.iter().enumerate() {
-                    emu.cpu_from_index(i).restore_state(s);
-                }
+                // OPTION 1: restore only the CPU state (registers et. al)
+                // for (i, s) in saved_cpu_states.iter().enumerate() {
+                //     emu.cpu_from_index(i).restore_state(s);
+                // }
 
+                // OPTION 2: restore a slow vanilla QEMU snapshot
                 // emu.load_snapshot("start", true);
+
+                // OPTION 3: restore a fast devices+mem snapshot
+                emu.restore_fast_snapshot(snap);
 
                 ret
             }

@@ -210,8 +210,7 @@ where
                         let must_remove = {
                             let old_meta = old.metadata_mut().get_mut::<AccountingIndexesMetadata>().ok_or_else(|| {
                                 Error::key_not_found(format!(
-                                    "AccountingIndexesMetadata, needed by CoverageAccountingScheduler, not found in testcase #{}",
-                                    old_idx
+                                    "AccountingIndexesMetadata, needed by CoverageAccountingScheduler, not found in testcase #{old_idx}"
                                 ))
                             })?;
                             *old_meta.refcnt_mut() -= 1;
@@ -264,10 +263,7 @@ where
     /// Cull the `Corpus`
     #[allow(clippy::unused_self)]
     pub fn accounting_cull(&self, state: &mut CS::State) -> Result<(), Error> {
-        let top_rated = match state.metadata().get::<TopAccountingMetadata>() {
-            None => return Ok(()),
-            Some(val) => val,
-        };
+        let Some(top_rated) = state.metadata().get::<TopAccountingMetadata>() else { return Ok(()) };
 
         for (_key, idx) in &top_rated.map {
             let mut entry = state.corpus().get(*idx)?.borrow_mut();
