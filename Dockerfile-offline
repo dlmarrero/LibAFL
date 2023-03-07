@@ -1,4 +1,4 @@
-FROM libafl-base
+FROM libafl:base
 
 # cargo-make dependency for example fuzzers
 RUN cargo install --no-default-features --force cargo-make
@@ -23,7 +23,7 @@ ENV CUSTOM_QEMU_DIR /qemu-libafl-bridge
 
 # Build qemu with gcc because clang causes bugs here
 ENV CROSS_CC=/arm-linux-musleabihf-cross/bin/arm-linux-musleabihf-gcc
-RUN cd libafl/libafl_qemu && CC=gcc cargo build --release -F usermode,arm
+RUN cd libafl/libafl_qemu && cargo build --release -F usermode,arm
 
 # Prevent qemu build from messing up build cache
 ENV CUSTOM_QEMU_NO_BUILD=1
