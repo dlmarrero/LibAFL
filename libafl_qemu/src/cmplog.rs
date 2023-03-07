@@ -1,8 +1,8 @@
 use hashbrown::HashMap;
 use libafl::{inputs::UsesInput, state::HasMetadata};
 pub use libafl_targets::{
-    cmplog::__libafl_targets_cmplog_instructions, CmpLogMap, CmpLogObserver, CMPLOG_MAP,
-    CMPLOG_MAP_H, CMPLOG_MAP_PTR, CMPLOG_MAP_SIZE, CMPLOG_MAP_W,
+    cmplog::__libafl_targets_cmplog_instructions, CmpLogMap, CmpLogObserver, CMPLOG_MAP_H,
+    CMPLOG_MAP_PTR, CMPLOG_MAP_SIZE, CMPLOG_MAP_W,
 };
 use serde::{Deserialize, Serialize};
 
@@ -42,7 +42,7 @@ impl QemuCmpLogHelper {
     }
 
     #[must_use]
-    pub fn must_instrument(&self, addr: u64) -> bool {
+    pub fn must_instrument(&self, addr: GuestAddr) -> bool {
         self.filter.allowed(addr)
     }
 }
@@ -83,7 +83,7 @@ impl QemuCmpLogChildHelper {
     }
 
     #[must_use]
-    pub fn must_instrument(&self, addr: u64) -> bool {
+    pub fn must_instrument(&self, addr: GuestAddr) -> bool {
         self.filter.allowed(addr)
     }
 }
@@ -127,7 +127,7 @@ where
     QT: QemuHelperTuple<S>,
 {
     if let Some(h) = hooks.match_helper_mut::<QemuCmpLogHelper>() {
-        if !h.must_instrument(pc.into()) {
+        if !h.must_instrument(pc) {
             return None;
         }
     }
@@ -159,7 +159,7 @@ where
     QT: QemuHelperTuple<S>,
 {
     if let Some(h) = hooks.match_helper_mut::<QemuCmpLogChildHelper>() {
-        if !h.must_instrument(pc.into()) {
+        if !h.must_instrument(pc) {
             return None;
         }
     }

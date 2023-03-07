@@ -13,7 +13,10 @@ use libafl::{
     fuzzer::HasObjective,
     inputs::UsesInput,
     observers::{ObserversTuple, UsesObservers},
-    state::{HasClientPerfMonitor, HasCorpus, HasExecutions, HasSolutions, State, UsesState},
+    state::{
+        HasClientPerfMonitor, HasCorpus, HasExecutions, HasFuzzedCorpusId, HasSolutions, State,
+        UsesState,
+    },
     Error,
 };
 
@@ -64,7 +67,12 @@ where
     where
         EM: EventFirer<State = S> + EventRestarter<State = S>,
         OF: Feedback<S>,
-        S: State + HasExecutions + HasCorpus + HasSolutions + HasClientPerfMonitor,
+        S: State
+            + HasExecutions
+            + HasCorpus
+            + HasSolutions
+            + HasClientPerfMonitor
+            + HasFuzzedCorpusId,
         Z: HasObjective<Objective = OF, State = S>,
     {
         Ok(Self {
@@ -117,9 +125,14 @@ where
             self.first_exec = false;
         }
         self.hooks.helpers_mut().pre_exec_all(&emu, input);
-        let r = self.inner.run_target(fuzzer, state, mgr, input);
-        self.hooks.helpers_mut().post_exec_all(&emu, input);
-        r
+        let mut exit_kind = self.inner.run_target(fuzzer, state, mgr, input)?;
+        self.hooks.helpers_mut().post_exec_all(
+            &emu,
+            input,
+            self.inner.observers_mut(),
+            &mut exit_kind,
+        );
+        Ok(exit_kind)
     }
 }
 
@@ -277,9 +290,14 @@ where
             self.first_exec = false;
         }
         self.hooks.helpers_mut().pre_exec_all(&emu, input);
-        let r = self.inner.run_target(fuzzer, state, mgr, input);
-        self.hooks.helpers_mut().post_exec_all(&emu, input);
-        r
+        let mut exit_kind = self.inner.run_target(fuzzer, state, mgr, input)?;
+        self.hooks.helpers_mut().post_exec_all(
+            &emu,
+            input,
+            self.inner.observers_mut(),
+            &mut exit_kind,
+        );
+        Ok(exit_kind)
     }
 }
 

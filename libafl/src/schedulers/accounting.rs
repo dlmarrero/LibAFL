@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     bolts::{rands::Rand, AsMutSlice, AsSlice, HasLen, HasRefCnt},
-    corpus::{Corpus, Testcase},
+    corpus::{Corpus, CorpusId, Testcase},
     feedbacks::MapIndexesMetadata,
     inputs::UsesInput,
     schedulers::{
@@ -74,7 +74,7 @@ impl AccountingIndexesMetadata {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TopAccountingMetadata {
     /// map index -> corpus index
-    pub map: HashMap<usize, usize>,
+    pub map: HashMap<usize, CorpusId>,
     /// If changed sicne the previous add to the corpus
     pub changed: bool,
     /// The max accounting seen so far
@@ -125,30 +125,30 @@ where
     CS::State: HasCorpus + HasMetadata + HasRand + Debug,
     <CS::State as UsesInput>::Input: HasLen,
 {
-    fn on_add(&self, state: &mut Self::State, idx: usize) -> Result<(), Error> {
+    fn on_add(&mut self, state: &mut Self::State, idx: CorpusId) -> Result<(), Error> {
         self.update_accounting_score(state, idx)?;
         self.inner.on_add(state, idx)
     }
 
     fn on_replace(
-        &self,
+        &mut self,
         state: &mut Self::State,
-        idx: usize,
+        idx: CorpusId,
         testcase: &Testcase<<Self::State as UsesInput>::Input>,
     ) -> Result<(), Error> {
         self.inner.on_replace(state, idx, testcase)
     }
 
     fn on_remove(
-        &self,
+        &mut self,
         state: &mut Self::State,
-        idx: usize,
+        idx: CorpusId,
         testcase: &Option<Testcase<<Self::State as UsesInput>::Input>>,
     ) -> Result<(), Error> {
         self.inner.on_remove(state, idx, testcase)
     }
 
-    fn next(&self, state: &mut Self::State) -> Result<usize, Error> {
+    fn next(&mut self, state: &mut Self::State) -> Result<CorpusId, Error> {
         if state
             .metadata()
             .get::<TopAccountingMetadata>()
@@ -158,7 +158,7 @@ where
         } else {
             self.inner.cull(state)?;
         }
-        let mut idx = self.inner.base().next(state)?;
+        let mut idx = self.inner.base_mut().next(state)?;
         while {
             let has = !state
                 .corpus()
@@ -168,7 +168,7 @@ where
             has
         } && state.rand_mut().below(100) < self.skip_non_favored_prob
         {
-            idx = self.inner.base().next(state)?;
+            idx = self.inner.base_mut().next(state)?;
         }
         Ok(idx)
     }
@@ -183,7 +183,11 @@ where
     /// Update the `Corpus` score
     #[allow(clippy::unused_self)]
     #[allow(clippy::cast_possible_wrap)]
-    pub fn update_accounting_score(&self, state: &mut CS::State, idx: usize) -> Result<(), Error> {
+    pub fn update_accounting_score(
+        &self,
+        state: &mut CS::State,
+        idx: CorpusId,
+    ) -> Result<(), Error> {
         let mut indexes = vec![];
         let mut new_favoreds = vec![];
         {

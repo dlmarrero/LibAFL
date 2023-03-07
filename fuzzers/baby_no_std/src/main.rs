@@ -1,8 +1,6 @@
 #![no_std]
 // Embedded targets: build with no_main
 #![cfg_attr(not(any(windows)), no_main)]
-// Embedded needs alloc error handlers which only work on nightly right now...
-#![cfg_attr(not(any(windows)), feature(default_alloc_error_handler))]
 
 #[cfg(any(windows, unix))]
 extern crate alloc;
@@ -87,7 +85,7 @@ pub extern "C" fn main(_argc: isize, _argv: *const *const u8) -> isize {
     };
 
     // Create an observation channel using the signals map
-    let observer = StdMapObserver::new("signals", unsafe { &mut SIGNALS });
+    let observer = unsafe { StdMapObserver::new("signals", &mut SIGNALS) };
 
     // Feedback to rate the interestingness of an input
     let mut feedback = MaxMapFeedback::new(&observer);

@@ -16,10 +16,10 @@ use libafl::{
         tuples::{tuple_list, Merge},
         AsMutSlice,
     },
-    corpus::{Corpus, OnDiskCorpus},
+    corpus::{Corpus, InMemoryOnDiskCorpus, OnDiskCorpus},
     events::SimpleEventManager,
     executors::forkserver::{ForkserverExecutor, TimeoutForkserverExecutor},
-    feedback_and_fast, feedback_or,
+    feedback_or,
     feedbacks::{CrashFeedback, MaxMapFeedback, TimeFeedback},
     fuzzer::{Fuzzer, StdFuzzer},
     inputs::BytesInput,
@@ -225,7 +225,7 @@ fn fuzz(
 
     // 'While the monitor are state, they are usually used in the broker - which is likely never restarted
     let monitor = SimpleMonitor::new(|s| {
-        println!("{}", s);
+        println!("{s}");
         writeln!(log.borrow_mut(), "{:?} {}", current_time(), s).unwrap();
     });
 
@@ -241,9 +241,12 @@ fn fuzz(
     // let the forkserver know the shmid
     shmem.write_to_env("__AFL_SHM_ID").unwrap();
     let shmem_buf = shmem.as_mut_slice();
+    // To let know the AFL++ binary that we have a big map
+    std::env::set_var("AFL_MAP_SIZE", format!("{}", MAP_SIZE));
 
     // Create an observation channel using the hitcounts map of AFL++
-    let edges_observer = HitcountsMapObserver::new(StdMapObserver::new("shared_mem", shmem_buf));
+    let edges_observer =
+        unsafe { HitcountsMapObserver::new(StdMapObserver::new("shared_mem", shmem_buf)) };
 
     // Create an observation channel to keep track of the execution time
     let time_observer = TimeObserver::new("time");
@@ -258,24 +261,18 @@ fn fuzz(
         // New maximization map feedback linked to the edges observer and the feedback state
         map_feedback,
         // Time feedback, this one does not need a feedback state
-        TimeFeedback::new_with_observer(&time_observer)
+        TimeFeedback::with_observer(&time_observer)
     );
 
     // A feedback to choose if an input is a solution or not
-    // We want to do the same crash deduplication that AFL does
-    let mut objective = feedback_and_fast!(
-        // Must be a crash
-        CrashFeedback::new(),
-        // Take it onlt if trigger new coverage over crashes
-        MaxMapFeedback::new(&edges_observer)
-    );
+    let mut objective = CrashFeedback::new();
 
     // create a State from scratch
     let mut state = StdState::new(
         // RNG
         StdRand::with_seed(current_nanos()),
         // Corpus that will be evolved, we keep it in memory for performance
-        OnDiskCorpus::<BytesInput>::new(corpus_dir).unwrap(),
+        InMemoryOnDiskCorpus::<BytesInput>::new(corpus_dir).unwrap(),
         // Corpus in which we store solutions (crashes in this example),
         // on disk so the user can get them after stopping the fuzzer
         OnDiskCorpus::new(objective_dir).unwrap(),
@@ -297,11 +294,13 @@ fn fuzz(
         5,
     )?;
 
-    let power = StdPowerMutationalStage::new(mutator, &edges_observer);
+    let power = StdPowerMutationalStage::new(mutator);
 
     // A minimization+queue policy to get testcasess from the corpus
     let scheduler = IndexesLenTimeMinimizerScheduler::new(StdWeightedScheduler::with_schedule(
-        PowerSchedule::EXPLORE,
+        &mut state,
+        &edges_observer,
+        Some(PowerSchedule::EXPLORE),
     ));
 
     // A fuzzer with feedbacks and a corpus scheduler

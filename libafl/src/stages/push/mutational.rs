@@ -12,7 +12,7 @@ use super::{PushStage, PushStageHelper, PushStageSharedState};
 use crate::monitors::PerfFeature;
 use crate::{
     bolts::rands::Rand,
-    corpus::Corpus,
+    corpus::{Corpus, CorpusId},
     events::{EventFirer, EventRestarter, HasEventManagerId, ProgressReporter},
     executors::ExitKind,
     inputs::UsesInput,
@@ -21,7 +21,9 @@ use crate::{
     observers::ObserversTuple,
     schedulers::Scheduler,
     start_timer,
-    state::{HasClientPerfMonitor, HasCorpus, HasExecutions, HasMetadata, HasRand},
+    state::{
+        HasClientPerfMonitor, HasCorpus, HasExecutions, HasFuzzedCorpusId, HasMetadata, HasRand,
+    },
     Error, EvaluatorObservers, ExecutionProcessor, HasScheduler,
 };
 
@@ -41,14 +43,14 @@ pub struct StdMutationalPushStage<CS, EM, M, OT, Z>
 where
     CS: Scheduler,
     EM: EventFirer<State = CS::State> + EventRestarter + HasEventManagerId,
-    M: Mutator<CS::State>,
+    M: Mutator<CS::Input, CS::State>,
     OT: ObserversTuple<CS::State>,
     CS::State: HasClientPerfMonitor + HasRand + Clone + Debug,
     Z: ExecutionProcessor<OT, State = CS::State>
         + EvaluatorObservers<OT>
         + HasScheduler<Scheduler = CS>,
 {
-    current_corpus_idx: Option<usize>,
+    current_corpus_idx: Option<CorpusId>,
     testcases_to_do: usize,
     testcases_done: usize,
 
@@ -63,7 +65,7 @@ impl<CS, EM, M, OT, Z> StdMutationalPushStage<CS, EM, M, OT, Z>
 where
     CS: Scheduler,
     EM: EventFirer<State = CS::State> + EventRestarter + HasEventManagerId,
-    M: Mutator<CS::State>,
+    M: Mutator<CS::Input, CS::State>,
     OT: ObserversTuple<CS::State>,
     CS::State: HasClientPerfMonitor + HasCorpus + HasRand + Clone + Debug,
     Z: ExecutionProcessor<OT, State = CS::State>
@@ -72,12 +74,12 @@ where
 {
     /// Gets the number of iterations as a random number
     #[allow(clippy::unused_self, clippy::unnecessary_wraps)] // TODO: we should put this function into a trait later
-    fn iterations(&self, state: &mut CS::State, _corpus_idx: usize) -> Result<usize, Error> {
+    fn iterations(&self, state: &mut CS::State, _corpus_idx: CorpusId) -> Result<usize, Error> {
         Ok(1 + state.rand_mut().below(DEFAULT_MUTATIONAL_MAX_ITERATIONS) as usize)
     }
 
     /// Sets the current corpus index
-    pub fn set_current_corpus_idx(&mut self, current_corpus_idx: usize) {
+    pub fn set_current_corpus_idx(&mut self, current_corpus_idx: CorpusId) {
         self.current_corpus_idx = Some(current_corpus_idx);
     }
 }
@@ -86,10 +88,16 @@ impl<CS, EM, M, OT, Z> PushStage<CS, EM, OT, Z> for StdMutationalPushStage<CS, E
 where
     CS: Scheduler,
     EM: EventFirer<State = CS::State> + EventRestarter + HasEventManagerId + ProgressReporter,
-    M: Mutator<CS::State>,
+    M: Mutator<CS::Input, CS::State>,
     OT: ObserversTuple<CS::State>,
-    CS::State:
-        HasClientPerfMonitor + HasCorpus + HasRand + HasExecutions + HasMetadata + Clone + Debug,
+    CS::State: HasFuzzedCorpusId
+        + HasClientPerfMonitor
+        + HasCorpus
+        + HasRand
+        + HasExecutions
+        + HasMetadata
+        + Clone
+        + Debug,
     Z: ExecutionProcessor<OT, State = CS::State>
         + EvaluatorObservers<OT>
         + HasScheduler<Scheduler = CS>,
@@ -116,7 +124,7 @@ where
         self.current_corpus_idx = Some(if let Some(corpus_idx) = self.current_corpus_idx {
             corpus_idx
         } else {
-            fuzzer.scheduler().next(state)?
+            fuzzer.scheduler_mut().next(state)?
         });
 
         self.testcases_to_do = self.iterations(state, self.current_corpus_idx.unwrap())?;
@@ -136,6 +144,8 @@ where
             return None;
         }
 
+        let idx = self.current_corpus_idx.unwrap();
+        state.set_fuzzed_corpus_id(idx);
         start_timer!(state);
         let mut input = state
             .corpus()
@@ -169,15 +179,16 @@ where
         last_input: <CS::State as UsesInput>::Input,
         exit_kind: ExitKind,
     ) -> Result<(), Error> {
-        // todo: isintersting, etc.
+        // todo: is_interesting, etc.
 
         fuzzer.process_execution(state, event_mgr, last_input, observers, &exit_kind, true)?;
 
         start_timer!(state);
         self.mutator
-            .post_exec(state, self.stage_idx, Some(self.testcases_done))?;
+            .post_exec(state, self.stage_idx, self.current_corpus_idx)?;
         mark_feature_time!(state, PerfFeature::MutatePostExec);
         self.testcases_done += 1;
+        state.clear_fuzzed_corpus_id();
 
         Ok(())
     }
@@ -199,10 +210,16 @@ impl<CS, EM, M, OT, Z> Iterator for StdMutationalPushStage<CS, EM, M, OT, Z>
 where
     CS: Scheduler,
     EM: EventFirer + EventRestarter + HasEventManagerId + ProgressReporter<State = CS::State>,
-    M: Mutator<CS::State>,
+    M: Mutator<CS::Input, CS::State>,
     OT: ObserversTuple<CS::State>,
-    CS::State:
-        HasClientPerfMonitor + HasCorpus + HasRand + HasExecutions + HasMetadata + Clone + Debug,
+    CS::State: HasClientPerfMonitor
+        + HasCorpus
+        + HasRand
+        + HasExecutions
+        + HasMetadata
+        + Clone
+        + Debug
+        + HasFuzzedCorpusId,
     Z: ExecutionProcessor<OT, State = CS::State>
         + EvaluatorObservers<OT>
         + HasScheduler<Scheduler = CS>,
@@ -218,7 +235,7 @@ impl<CS, EM, M, OT, Z> StdMutationalPushStage<CS, EM, M, OT, Z>
 where
     CS: Scheduler,
     EM: EventFirer<State = CS::State> + EventRestarter + HasEventManagerId,
-    M: Mutator<CS::State>,
+    M: Mutator<CS::Input, CS::State>,
     OT: ObserversTuple<CS::State>,
     CS::State: HasClientPerfMonitor + HasCorpus + HasRand + Clone + Debug,
     Z: ExecutionProcessor<OT, State = CS::State>

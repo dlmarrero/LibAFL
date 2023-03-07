@@ -32,13 +32,13 @@ use libafl::{
         scheduled::{havoc_mutations, tokens_mutations, StdScheduledMutator},
         token_mutations::Tokens,
     },
-    observers::{HitcountsMapObserver, StdMapObserver, TimeObserver},
+    observers::{HitcountsMapObserver, TimeObserver},
     schedulers::{IndexesLenTimeMinimizerScheduler, QueueScheduler},
     stages::mutational::StdMutationalStage,
     state::{HasCorpus, HasMetadata, StdState},
     Error,
 };
-use libafl_targets::{libfuzzer_initialize, libfuzzer_test_one_input, EDGES_MAP, MAX_EDGES_NUM};
+use libafl_targets::{libfuzzer_initialize, libfuzzer_test_one_input, std_edges_map_observer};
 
 /// Parse a millis string to a [`Duration`]. Used for arg parsing.
 fn timeout_from_millis_str(time: &str) -> Result<Duration, Error> {
@@ -129,13 +129,12 @@ pub fn libafl_main() {
 
     let monitor = OnDiskTOMLMonitor::new(
         "./fuzzer_stats.toml",
-        MultiMonitor::new(|s| println!("{}", s)),
+        MultiMonitor::new(|s| println!("{s}")),
     );
 
     let mut run_client = |state: Option<_>, mut restarting_mgr, _core_id| {
         // Create an observation channel using the coverage map
-        let edges = unsafe { &mut EDGES_MAP[0..MAX_EDGES_NUM] };
-        let edges_observer = HitcountsMapObserver::new(StdMapObserver::new("edges", edges));
+        let edges_observer = HitcountsMapObserver::new(unsafe { std_edges_map_observer("edges") });
 
         // Create an observation channel to keep track of the execution time
         let time_observer = TimeObserver::new("time");
@@ -146,7 +145,7 @@ pub fn libafl_main() {
             // New maximization map feedback linked to the edges observer and the feedback state
             MaxMapFeedback::new_tracking(&edges_observer, true, false),
             // Time feedback, this one does not need a feedback state
-            TimeFeedback::new_with_observer(&time_observer)
+            TimeFeedback::with_observer(&time_observer)
         );
 
         // A feedback to choose if an input is a solution or not
@@ -219,11 +218,11 @@ pub fn libafl_main() {
         // Call LLVMFUzzerInitialize() if present.
         let args: Vec<String> = env::args().collect();
         if libfuzzer_initialize(&args) == -1 {
-            println!("Warning: LLVMFuzzerInitialize failed with -1")
+            println!("Warning: LLVMFuzzerInitialize failed with -1");
         }
 
         // In case the corpus is empty (on first run), reset
-        if state.corpus().count() < 1 {
+        if state.must_load_initial_inputs() {
             state
                 .load_initial_inputs(&mut fuzzer, &mut executor, &mut restarting_mgr, &opt.input)
                 .unwrap_or_else(|_| panic!("Failed to load initial corpus at {:?}", &opt.input));
@@ -248,6 +247,6 @@ pub fn libafl_main() {
     {
         Ok(()) => (),
         Err(Error::ShuttingDown) => println!("Fuzzing stopped by user. Good bye."),
-        Err(err) => panic!("Failed to run launcher: {:?}", err),
+        Err(err) => panic!("Failed to run launcher: {err:?}"),
     }
 }

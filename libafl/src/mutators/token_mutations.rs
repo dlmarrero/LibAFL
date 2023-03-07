@@ -88,8 +88,7 @@ impl Tokens {
             head += 1;
             if size > 0 {
                 self.add_token(&slice[head..head + size].to_vec());
-                #[cfg(feature = "std")]
-                println!(
+                log::info!(
                     "Token size: {} content: {:x?}",
                     size,
                     &slice[head..head + size].to_vec()
@@ -106,7 +105,10 @@ impl Tokens {
     /// The caller must ensure that the region between `token_start` and `token_stop`
     /// is a valid region, containing autotokens in the exepcted format.
     #[cfg(any(target_os = "linux", target_vendor = "apple"))]
-    pub unsafe fn from_ptrs(token_start: *const u8, token_stop: *const u8) -> Result<Self, Error> {
+    pub unsafe fn from_mut_ptrs(
+        token_start: *const u8,
+        token_stop: *const u8,
+    ) -> Result<Self, Error> {
         let mut ret = Self::default();
         if token_start.is_null() || token_stop.is_null() {
             return Ok(Self::new());
@@ -117,7 +119,7 @@ impl Tokens {
             )));
         }
         let section_size: usize = token_stop.offset_from(token_start).try_into().unwrap();
-        // println!("size: {}", section_size);
+        // log::info!("size: {}", section_size);
         let slice = from_raw_parts(token_start, section_size);
 
         // Now we know the beginning and the end of the token section.. let's parse them into tokens
@@ -154,7 +156,7 @@ impl Tokens {
     where
         P: AsRef<Path>,
     {
-        // println!("Loading tokens file {:?} ...", file);
+        // log::info!("Loading tokens file {:?} ...", file);
 
         let file = File::open(file)?; // panic if not found
         let reader = BufReader::new(file);
@@ -288,15 +290,15 @@ impl<'it> IntoIterator for &'it Tokens {
 #[derive(Debug, Default)]
 pub struct TokenInsert;
 
-impl<S> Mutator<S> for TokenInsert
+impl<I, S> Mutator<I, S> for TokenInsert
 where
-    S: UsesInput + HasMetadata + HasRand + HasMaxSize,
-    S::Input: HasBytesVec,
+    S: HasMetadata + HasRand + HasMaxSize,
+    I: HasBytesVec,
 {
     fn mutate(
         &mut self,
         state: &mut S,
-        input: &mut S::Input,
+        input: &mut I,
         _stage_idx: i32,
     ) -> Result<MutationResult, Error> {
         let max_size = state.max_size();
@@ -354,15 +356,15 @@ impl TokenInsert {
 #[derive(Debug, Default)]
 pub struct TokenReplace;
 
-impl<S> Mutator<S> for TokenReplace
+impl<I, S> Mutator<I, S> for TokenReplace
 where
     S: UsesInput + HasMetadata + HasRand + HasMaxSize,
-    S::Input: HasBytesVec,
+    I: HasBytesVec,
 {
     fn mutate(
         &mut self,
         state: &mut S,
-        input: &mut S::Input,
+        input: &mut I,
         _stage_idx: i32,
     ) -> Result<MutationResult, Error> {
         let size = input.bytes().len();
@@ -416,16 +418,16 @@ impl TokenReplace {
 #[derive(Debug, Default)]
 pub struct I2SRandReplace;
 
-impl<S> Mutator<S> for I2SRandReplace
+impl<I, S> Mutator<I, S> for I2SRandReplace
 where
     S: UsesInput + HasMetadata + HasRand + HasMaxSize,
-    S::Input: HasBytesVec,
+    I: HasBytesVec,
 {
     #[allow(clippy::too_many_lines)]
     fn mutate(
         &mut self,
         state: &mut S,
-        input: &mut S::Input,
+        input: &mut I,
         _stage_idx: i32,
     ) -> Result<MutationResult, Error> {
         let size = input.bytes().len();
@@ -617,8 +619,7 @@ token2="B"
         "###;
         fs::write("test.tkns", data).expect("Unable to write test.tkns");
         let tokens = Tokens::from_file("test.tkns").unwrap();
-        #[cfg(feature = "std")]
-        println!("Token file entries: {:?}", tokens.tokens());
+        log::info!("Token file entries: {:?}", tokens.tokens());
         assert_eq!(tokens.tokens().len(), 2);
         let _res = fs::remove_file("test.tkns");
     }

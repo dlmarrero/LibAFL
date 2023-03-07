@@ -2,16 +2,17 @@
 //! with testcases only from a subset of the total corpus.
 
 use alloc::vec::Vec;
-use core::{cmp::Ordering, marker::PhantomData};
+use core::{any::type_name, cmp::Ordering, marker::PhantomData};
 
 use hashbrown::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     bolts::{rands::Rand, serdeany::SerdeAny, AsSlice, HasRefCnt},
-    corpus::{Corpus, Testcase},
+    corpus::{Corpus, CorpusId, Testcase},
     feedbacks::MapIndexesMetadata,
     inputs::UsesInput,
+    observers::ObserversTuple,
     schedulers::{LenTimeMulTestcaseScore, Scheduler, TestcaseScore},
     state::{HasCorpus, HasMetadata, HasRand, UsesState},
     Error,
@@ -30,7 +31,7 @@ crate::impl_serdeany!(IsFavoredMetadata);
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TopRatedsMetadata {
     /// map index -> corpus index
-    pub map: HashMap<usize, usize>,
+    pub map: HashMap<usize, CorpusId>,
 }
 
 crate::impl_serdeany!(TopRatedsMetadata);
@@ -46,7 +47,7 @@ impl TopRatedsMetadata {
 
     /// Getter for map
     #[must_use]
-    pub fn map(&self) -> &HashMap<usize, usize> {
+    pub fn map(&self) -> &HashMap<usize, CorpusId> {
         &self.map
     }
 }
@@ -82,27 +83,27 @@ where
     CS::State: HasCorpus + HasMetadata + HasRand,
 {
     /// Add an entry to the corpus and return its index
-    fn on_add(&self, state: &mut CS::State, idx: usize) -> Result<(), Error> {
-        self.update_score(state, idx)?;
-        self.base.on_add(state, idx)
+    fn on_add(&mut self, state: &mut CS::State, idx: CorpusId) -> Result<(), Error> {
+        self.base.on_add(state, idx)?;
+        self.update_score(state, idx)
     }
 
     /// Replaces the testcase at the given idx
     fn on_replace(
-        &self,
+        &mut self,
         state: &mut CS::State,
-        idx: usize,
+        idx: CorpusId,
         testcase: &Testcase<<CS::State as UsesInput>::Input>,
     ) -> Result<(), Error> {
-        self.update_score(state, idx)?;
-        self.base.on_replace(state, idx, testcase)
+        self.base.on_replace(state, idx, testcase)?;
+        self.update_score(state, idx)
     }
 
     /// Removes an entry from the corpus, returning M if M was present.
     fn on_remove(
-        &self,
+        &mut self,
         state: &mut CS::State,
-        idx: usize,
+        idx: CorpusId,
         testcase: &Option<Testcase<<CS::State as UsesInput>::Input>>,
     ) -> Result<(), Error> {
         self.base.on_remove(state, idx, testcase)?;
@@ -112,19 +113,13 @@ where
                 .drain_filter(|_, other_idx| *other_idx == idx)
                 .map(|(entry, _)| entry)
                 .collect::<Vec<_>>();
-            meta.map
-                .values_mut()
-                .filter(|other_idx| **other_idx > idx)
-                .for_each(|other_idx| {
-                    *other_idx -= 1;
-                });
             entries
         } else {
             return Ok(());
         };
         entries.sort_unstable(); // this should already be sorted, but just in case
         let mut map = HashMap::new();
-        for i in 0..state.corpus().count() {
+        for i in state.corpus().ids() {
             let mut old = state.corpus().get(i)?.borrow_mut();
             let factor = F::compute(&mut *old, state)?;
             if let Some(old_map) = old.metadata_mut().get_mut::<M>() {
@@ -168,8 +163,21 @@ where
         Ok(())
     }
 
+    /// An input has been evaluated
+    fn on_evaluation<OT>(
+        &mut self,
+        state: &mut Self::State,
+        input: &<Self::State as UsesInput>::Input,
+        observers: &OT,
+    ) -> Result<(), Error>
+    where
+        OT: ObserversTuple<Self::State>,
+    {
+        self.base.on_evaluation(state, input, observers)
+    }
+
     /// Gets the next entry
-    fn next(&self, state: &mut CS::State) -> Result<usize, Error> {
+    fn next(&mut self, state: &mut CS::State) -> Result<CorpusId, Error> {
         self.cull(state)?;
         let mut idx = self.base.next(state)?;
         while {
@@ -197,7 +205,7 @@ where
     /// Update the `Corpus` score using the `MinimizerScheduler`
     #[allow(clippy::unused_self)]
     #[allow(clippy::cast_possible_wrap)]
-    pub fn update_score(&self, state: &mut CS::State, idx: usize) -> Result<(), Error> {
+    pub fn update_score(&self, state: &mut CS::State, idx: CorpusId) -> Result<(), Error> {
         // Create a new top rated meta if not existing
         if state.metadata().get::<TopRatedsMetadata>().is_none() {
             state.add_metadata(TopRatedsMetadata::new());
@@ -212,14 +220,13 @@ where
                     "Metadata needed for MinimizerScheduler not found in testcase #{idx}"
                 ))
             })?;
+            let top_rateds = state.metadata().get::<TopRatedsMetadata>().unwrap();
             for elem in meta.as_slice() {
-                if let Some(old_idx) = state
-                    .metadata()
-                    .get::<TopRatedsMetadata>()
-                    .unwrap()
-                    .map
-                    .get(elem)
-                {
+                if let Some(old_idx) = top_rateds.map.get(elem) {
+                    if *old_idx == idx {
+                        new_favoreds.push(*elem); // always retain current; we'll drop it later otherwise
+                        continue;
+                    }
                     let mut old = state.corpus().get(*old_idx)?.borrow_mut();
                     if factor > F::compute(&mut *old, state)? {
                         continue;
@@ -228,7 +235,8 @@ where
                     let must_remove = {
                         let old_meta = old.metadata_mut().get_mut::<M>().ok_or_else(|| {
                             Error::key_not_found(format!(
-                                "Metadata needed for MinimizerScheduler not found in testcase #{old_idx}"
+                                "{} needed for MinimizerScheduler not found in testcase #{old_idx}",
+                                type_name::<M>()
                             ))
                         })?;
                         *old_meta.refcnt_mut() -= 1;
@@ -281,7 +289,8 @@ where
                 let mut entry = state.corpus().get(*idx)?.borrow_mut();
                 let meta = entry.metadata().get::<M>().ok_or_else(|| {
                     Error::key_not_found(format!(
-                        "Metadata needed for MinimizerScheduler not found in testcase #{idx}"
+                        "{} needed for MinimizerScheduler not found in testcase #{idx}",
+                        type_name::<M>()
                     ))
                 })?;
                 for elem in meta.as_slice() {
@@ -298,6 +307,11 @@ where
     /// Get a reference to the base scheduler
     pub fn base(&self) -> &CS {
         &self.base
+    }
+
+    /// Get a reference to the base scheduler (mut)
+    pub fn base_mut(&mut self) -> &mut CS {
+        &mut self.base
     }
 
     /// Creates a new [`MinimizerScheduler`] that wraps a `base` [`Scheduler`]

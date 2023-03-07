@@ -103,7 +103,8 @@ pub fn main() {
     let shmem_buf = shmem.as_mut_slice();
 
     // Create an observation channel using the signals map
-    let edges_observer = HitcountsMapObserver::new(StdMapObserver::new("shared_mem", shmem_buf));
+    let edges_observer =
+        unsafe { HitcountsMapObserver::new(StdMapObserver::new("shared_mem", shmem_buf)) };
 
     // Create an observation channel to keep track of the execution time
     let time_observer = TimeObserver::new("time");
@@ -114,7 +115,7 @@ pub fn main() {
         // New maximization map feedback linked to the edges observer and the feedback state
         MaxMapFeedback::new_tracking(&edges_observer, true, false),
         // Time feedback, this one does not need a feedback state
-        TimeFeedback::new_with_observer(&time_observer)
+        TimeFeedback::with_observer(&time_observer)
     );
 
     // A feedback to choose if an input is a solution or not
@@ -122,8 +123,9 @@ pub fn main() {
     let mut objective = feedback_and_fast!(
         // Must be a crash
         CrashFeedback::new(),
-        // Take it onlt if trigger new coverage over crashes
-        MaxMapFeedback::new(&edges_observer)
+        // Take it only if trigger new coverage over crashes
+        // Uses `with_name` to create a different history from the `MaxMapFeedback` in `feedback` above
+        MaxMapFeedback::with_name("mapfeedback_metadata_objective", &edges_observer)
     );
 
     // create a State from scratch
@@ -144,7 +146,7 @@ pub fn main() {
     .unwrap();
 
     // The Monitor trait define how the fuzzer stats are reported to the user
-    let monitor = SimpleMonitor::new(|s| println!("{}", s));
+    let monitor = SimpleMonitor::new(|s| println!("{s}"));
 
     // The event manager handle the various events generated during the fuzzing loop
     // such as the notification of the addition of a new item to the corpus
@@ -189,7 +191,7 @@ pub fn main() {
     .expect("Failed to create the executor.");
 
     // In case the corpus is empty (on first run), reset
-    if state.corpus().count() < 1 {
+    if state.must_load_initial_inputs() {
         state
             .load_initial_inputs(&mut fuzzer, &mut executor, &mut mgr, &corpus_dirs)
             .unwrap_or_else(|err| {

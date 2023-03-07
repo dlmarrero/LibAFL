@@ -10,8 +10,9 @@ use crate::{
     bolts::{rands::Rand, tuples::Named},
     corpus::Corpus,
     generators::GramatronGenerator,
-    inputs::{GramatronInput, Terminal, UsesInput},
+    inputs::{GramatronInput, Terminal},
     mutators::{MutationResult, Mutator},
+    random_corpus_id,
     state::{HasCorpus, HasMetadata, HasRand},
     Error,
 };
@@ -27,9 +28,9 @@ where
     generator: &'a GramatronGenerator<'a, S>,
 }
 
-impl<'a, S> Mutator<S> for GramatronRandomMutator<'a, S>
+impl<'a, S> Mutator<GramatronInput, S> for GramatronRandomMutator<'a, S>
 where
-    S: UsesInput<Input = GramatronInput> + HasRand + HasMetadata,
+    S: HasRand + HasMetadata,
 {
     fn mutate(
         &mut self,
@@ -96,9 +97,9 @@ impl GramatronIdxMapMetadata {
 #[derive(Default, Debug)]
 pub struct GramatronSpliceMutator;
 
-impl<S> Mutator<S> for GramatronSpliceMutator
+impl<S> Mutator<S::Input, S> for GramatronSpliceMutator
 where
-    S: UsesInput<Input = GramatronInput> + HasRand + HasCorpus + HasMetadata,
+    S: HasRand + HasCorpus<Input = GramatronInput> + HasMetadata,
 {
     fn mutate(
         &mut self,
@@ -110,8 +111,7 @@ where
             return Ok(MutationResult::Skipped);
         }
 
-        let count = state.corpus().count();
-        let idx = state.rand_mut().below(count as u64) as usize;
+        let idx = random_corpus_id!(state.corpus(), state.rand_mut());
 
         let insert_at = state.rand_mut().below(input.terminals().len() as u64) as usize;
 
@@ -169,9 +169,9 @@ pub struct GramatronRecursionMutator {
     feature: Vec<Terminal>,
 }
 
-impl<S> Mutator<S> for GramatronRecursionMutator
+impl<S> Mutator<GramatronInput, S> for GramatronRecursionMutator
 where
-    S: UsesInput<Input = GramatronInput> + HasRand + HasMetadata,
+    S: HasRand + HasMetadata,
 {
     fn mutate(
         &mut self,

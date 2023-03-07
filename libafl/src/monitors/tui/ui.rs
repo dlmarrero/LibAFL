@@ -265,7 +265,7 @@ impl TuiUI {
             }
         }
 
-        //println!("max_x: {}, len: {}", max_x, self.graph_data.len());
+        //log::trace!("max_x: {}, len: {}", max_x, self.graph_data.len());
 
         let datasets = vec![Dataset::default()
             //.name("data")
@@ -397,7 +397,7 @@ impl TuiUI {
                 ]));
                 client_items.push(Row::new(vec![
                     Cell::from(Span::raw("exec/sec")),
-                    Cell::from(Span::raw(format!("{}", client.exec_sec))),
+                    Cell::from(Span::raw(client.exec_sec.clone())),
                 ]));
                 client_items.push(Row::new(vec![
                     Cell::from(Span::raw("corpus")),

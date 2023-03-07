@@ -5,6 +5,7 @@ use core::{fmt::Debug, marker::PhantomData, time::Duration};
 use std::{
     fs,
     path::{Path, PathBuf},
+    vec::Vec,
 };
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -16,7 +17,7 @@ use crate::{
         rands::Rand,
         serdeany::{NamedSerdeAnyMap, SerdeAny, SerdeAnyMap},
     },
-    corpus::Corpus,
+    corpus::{Corpus, CorpusId},
     events::{Event, EventFirer, LogSeverity},
     feedbacks::Feedback,
     fuzzer::{Evaluator, ExecuteInputResult},
@@ -57,6 +58,21 @@ pub trait HasCorpus: UsesInput {
     fn corpus(&self) -> &Self::Corpus;
     /// The testcase corpus (mutable)
     fn corpus_mut(&mut self) -> &mut Self::Corpus;
+}
+
+/// Trait for a state that has information about which [`CorpusId`]
+/// is currently being fuzzed.
+/// When a new interesting input was found, this value becomes the `parent_id`.
+pub trait HasFuzzedCorpusId {
+    /// The currently fuzzed [`CorpusId`], if known.
+    /// If a new interesting testcase was found, this should usually become the `parent_id`.
+    fn fuzzed_corpus_id(&self) -> Option<CorpusId>;
+
+    /// Sets the currently fuzzed [`CorpusId`].
+    fn set_fuzzed_corpus_id(&mut self, corpus_id: CorpusId);
+
+    /// Resets the currently fuzzed [`CorpusId`].
+    fn clear_fuzzed_corpus_id(&mut self);
 }
 
 /// Interact with the maximum size
@@ -191,9 +207,14 @@ pub struct StdState<I, C, R, SC> {
     named_metadata: NamedSerdeAnyMap,
     /// MaxSize testcase size for mutators that appreciate it
     max_size: usize,
+    /// The [`CorpusId`] of the testcase we're currently fuzzing.
+    fuzzed_corpus_id: Option<CorpusId>,
     /// Performance statistics for this fuzzer
     #[cfg(feature = "introspection")]
     introspection_monitor: ClientPerfMonitor,
+    #[cfg(feature = "std")]
+    /// Remaining initial inputs to load, if any
+    remaining_initial_files: Option<Vec<PathBuf>>,
     phantom: PhantomData<I>,
 }
 
@@ -250,6 +271,20 @@ where
     #[inline]
     fn corpus_mut(&mut self) -> &mut Self::Corpus {
         &mut self.corpus
+    }
+}
+
+impl<I, C, R, SC> HasFuzzedCorpusId for StdState<I, C, R, SC> {
+    fn fuzzed_corpus_id(&self) -> Option<CorpusId> {
+        self.fuzzed_corpus_id
+    }
+
+    fn set_fuzzed_corpus_id(&mut self, fuzzed_corpus_id: CorpusId) {
+        self.fuzzed_corpus_id = Some(fuzzed_corpus_id);
+    }
+
+    fn clear_fuzzed_corpus_id(&mut self) {
+        self.fuzzed_corpus_id = None;
     }
 }
 
@@ -347,26 +382,22 @@ where
     R: Rand,
     SC: Corpus<Input = <Self as UsesInput>::Input>,
 {
-    /// Loads inputs from a directory.
-    /// If `forced` is `true`, the value will be loaded,
-    /// even if it's not considered to be `interesting`.
-    pub fn load_from_directory<E, EM, Z>(
-        &mut self,
-        fuzzer: &mut Z,
-        executor: &mut E,
-        manager: &mut EM,
-        in_dir: &Path,
-        forced: bool,
-        loader: &mut dyn FnMut(&mut Z, &mut Self, &Path) -> Result<I, Error>,
-    ) -> Result<(), Error>
-    where
-        E: UsesState<State = Self>,
-        EM: UsesState<State = Self>,
-        Z: Evaluator<E, EM, State = Self>,
-    {
+    /// Decide if the state nust load the inputs
+    pub fn must_load_initial_inputs(&self) -> bool {
+        self.corpus().count() == 0
+            || (self.remaining_initial_files.is_some()
+                && !self.remaining_initial_files.as_ref().unwrap().is_empty())
+    }
+
+    /// List initial inputs from a directory.
+    fn visit_initial_directory(files: &mut Vec<PathBuf>, in_dir: &Path) -> Result<(), Error> {
         for entry in fs::read_dir(in_dir)? {
             let entry = entry?;
             let path = entry.path();
+            if path.file_name().unwrap().to_string_lossy().starts_with('.') {
+                continue;
+            }
+
             let attributes = fs::metadata(&path);
 
             if attributes.is_err() {
@@ -376,18 +407,9 @@ where
             let attr = attributes?;
 
             if attr.is_file() && attr.len() > 0 {
-                println!("Loading file {:?} ...", &path);
-                let input = loader(fuzzer, self, &path)?;
-                if forced {
-                    let _ = fuzzer.add_input(self, executor, manager, input)?;
-                } else {
-                    let (res, _) = fuzzer.evaluate_input(self, executor, manager, input)?;
-                    if res == ExecuteInputResult::None {
-                        println!("File {:?} was not interesting, skipped.", &path);
-                    }
-                }
+                files.push(path);
             } else if attr.is_dir() {
-                self.load_from_directory(fuzzer, executor, manager, &path, forced, loader)?;
+                Self::visit_initial_directory(files, &path)?;
             }
         }
 
@@ -396,29 +418,99 @@ where
 
     /// Loads initial inputs from the passed-in `in_dirs`.
     /// If `forced` is true, will add all testcases, no matter what.
-    fn load_initial_inputs_internal<E, EM, Z>(
+    fn load_initial_inputs_custom<E, EM, Z>(
         &mut self,
         fuzzer: &mut Z,
         executor: &mut E,
         manager: &mut EM,
         in_dirs: &[PathBuf],
         forced: bool,
+        loader: &mut dyn FnMut(&mut Z, &mut Self, &Path) -> Result<I, Error>,
     ) -> Result<(), Error>
     where
         E: UsesState<State = Self>,
         EM: EventFirer<State = Self>,
         Z: Evaluator<E, EM, State = Self>,
     {
-        for in_dir in in_dirs {
-            self.load_from_directory(
-                fuzzer,
-                executor,
-                manager,
-                in_dir,
-                forced,
-                &mut |_, _, path| I::from_file(path),
-            )?;
+        if let Some(remaining) = self.remaining_initial_files.as_ref() {
+            // everything was loaded
+            if remaining.is_empty() {
+                return Ok(());
+            }
+        } else {
+            let mut files = vec![];
+            for in_dir in in_dirs {
+                Self::visit_initial_directory(&mut files, in_dir)?;
+            }
+
+            self.remaining_initial_files = Some(files);
         }
+
+        self.continue_loading_initial_inputs_custom(fuzzer, executor, manager, forced, loader)
+    }
+
+    /// Loads initial inputs from the passed-in `in_dirs`.
+    /// If `forced` is true, will add all testcases, no matter what.
+    /// This method takes a list of files.
+    fn load_initial_inputs_custom_by_filenames<E, EM, Z>(
+        &mut self,
+        fuzzer: &mut Z,
+        executor: &mut E,
+        manager: &mut EM,
+        file_list: &[PathBuf],
+        forced: bool,
+        loader: &mut dyn FnMut(&mut Z, &mut Self, &Path) -> Result<I, Error>,
+    ) -> Result<(), Error>
+    where
+        E: UsesState<State = Self>,
+        EM: EventFirer<State = Self>,
+        Z: Evaluator<E, EM, State = Self>,
+    {
+        if let Some(remaining) = self.remaining_initial_files.as_ref() {
+            // everything was loaded
+            if remaining.is_empty() {
+                return Ok(());
+            }
+        } else {
+            self.remaining_initial_files = Some(file_list.to_vec());
+        }
+
+        self.continue_loading_initial_inputs_custom(fuzzer, executor, manager, forced, loader)
+    }
+
+    /// Loads initial inputs from the passed-in `in_dirs`.
+    /// If `forced` is true, will add all testcases, no matter what.
+    /// This method takes a list of files.
+    fn continue_loading_initial_inputs_custom<E, EM, Z>(
+        &mut self,
+        fuzzer: &mut Z,
+        executor: &mut E,
+        manager: &mut EM,
+        forced: bool,
+        loader: &mut dyn FnMut(&mut Z, &mut Self, &Path) -> Result<I, Error>,
+    ) -> Result<(), Error>
+    where
+        E: UsesState<State = Self>,
+        EM: EventFirer<State = Self>,
+        Z: Evaluator<E, EM, State = Self>,
+    {
+        if self.remaining_initial_files.is_none() {
+            return Err(Error::illegal_state("No initial files were loaded, cannot continue loading. Call a `load_initial_input` fn first!"));
+        }
+
+        while let Some(path) = self.remaining_initial_files.as_mut().unwrap().pop() {
+            log::info!("Loading file {:?} ...", &path);
+            let input = loader(fuzzer, self, &path)?;
+            if forced {
+                let _: CorpusId = fuzzer.add_input(self, executor, manager, input)?;
+            } else {
+                let (res, _) = fuzzer.evaluate_input(self, executor, manager, input)?;
+                if res == ExecuteInputResult::None {
+                    log::warn!("File {:?} was not interesting, skipped.", &path);
+                }
+            }
+        }
+
         manager.fire(
             self,
             Event::Log {
@@ -428,6 +520,32 @@ where
             },
         )?;
         Ok(())
+    }
+
+    /// Loads all intial inputs, even if they are not considered `interesting`.
+    /// This is rarely the right method, use `load_initial_inputs`,
+    /// and potentially fix your `Feedback`, instead.
+    /// This method takes a list of files, instead of folders.
+    pub fn load_initial_inputs_by_filenames<E, EM, Z>(
+        &mut self,
+        fuzzer: &mut Z,
+        executor: &mut E,
+        manager: &mut EM,
+        file_list: &[PathBuf],
+    ) -> Result<(), Error>
+    where
+        E: UsesState<State = Self>,
+        EM: EventFirer<State = Self>,
+        Z: Evaluator<E, EM, State = Self>,
+    {
+        self.load_initial_inputs_custom_by_filenames(
+            fuzzer,
+            executor,
+            manager,
+            file_list,
+            false,
+            &mut |_, _, path| I::from_file(path),
+        )
     }
 
     /// Loads all intial inputs, even if they are not considered `interesting`.
@@ -445,7 +563,39 @@ where
         EM: EventFirer<State = Self>,
         Z: Evaluator<E, EM, State = Self>,
     {
-        self.load_initial_inputs_internal(fuzzer, executor, manager, in_dirs, true)
+        self.load_initial_inputs_custom(
+            fuzzer,
+            executor,
+            manager,
+            in_dirs,
+            true,
+            &mut |_, _, path| I::from_file(path),
+        )
+    }
+
+    /// Loads initial inputs from the passed-in `in_dirs`.
+    /// If `forced` is true, will add all testcases, no matter what.
+    /// This method takes a list of files, instead of folders.
+    pub fn load_initial_inputs_by_filenames_forced<E, EM, Z>(
+        &mut self,
+        fuzzer: &mut Z,
+        executor: &mut E,
+        manager: &mut EM,
+        file_list: &[PathBuf],
+    ) -> Result<(), Error>
+    where
+        E: UsesState<State = Self>,
+        EM: EventFirer<State = Self>,
+        Z: Evaluator<E, EM, State = Self>,
+    {
+        self.load_initial_inputs_custom_by_filenames(
+            fuzzer,
+            executor,
+            manager,
+            file_list,
+            true,
+            &mut |_, _, path| I::from_file(path),
+        )
     }
 
     /// Loads initial inputs from the passed-in `in_dirs`.
@@ -461,7 +611,14 @@ where
         EM: EventFirer<State = Self>,
         Z: Evaluator<E, EM, State = Self>,
     {
-        self.load_initial_inputs_internal(fuzzer, executor, manager, in_dirs, false)
+        self.load_initial_inputs_custom(
+            fuzzer,
+            executor,
+            manager,
+            in_dirs,
+            false,
+            &mut |_, _, path| I::from_file(path),
+        )
     }
 }
 
@@ -491,7 +648,7 @@ where
         for _ in 0..num {
             let input = generator.generate(self)?;
             if forced {
-                let _ = fuzzer.add_input(self, executor, manager, input)?;
+                let _: CorpusId = fuzzer.add_input(self, executor, manager, input)?;
                 added += 1;
             } else {
                 let (res, _) = fuzzer.evaluate_input(self, executor, manager, input)?;
@@ -568,8 +725,11 @@ where
             corpus,
             solutions,
             max_size: DEFAULT_MAX_SIZE,
+            fuzzed_corpus_id: None,
             #[cfg(feature = "introspection")]
             introspection_monitor: ClientPerfMonitor::new(),
+            #[cfg(feature = "std")]
+            remaining_initial_files: None,
             phantom: PhantomData,
         };
         feedback.init_state(&mut state)?;
@@ -689,7 +849,7 @@ pub mod pybind {
     use pyo3::{prelude::*, types::PyDict};
 
     use crate::{
-        bolts::{ownedref::OwnedPtrMut, rands::pybind::PythonRand},
+        bolts::{ownedref::OwnedMutPtr, rands::pybind::PythonRand},
         corpus::pybind::PythonCorpus,
         events::pybind::PythonEventManager,
         executors::pybind::PythonExecutor,
@@ -711,13 +871,13 @@ pub mod pybind {
     /// Python class for StdState
     pub struct PythonStdStateWrapper {
         /// Rust wrapped StdState object
-        pub inner: OwnedPtrMut<PythonStdState>,
+        pub inner: OwnedMutPtr<PythonStdState>,
     }
 
     impl PythonStdStateWrapper {
         pub fn wrap(r: &mut PythonStdState) -> Self {
             Self {
-                inner: OwnedPtrMut::Ptr(r),
+                inner: OwnedMutPtr::Ptr(r),
             }
         }
 
@@ -742,7 +902,7 @@ pub mod pybind {
             objective: &mut PythonFeedback,
         ) -> Self {
             Self {
-                inner: OwnedPtrMut::Owned(Box::new(
+                inner: OwnedMutPtr::Owned(Box::new(
                     StdState::new(py_rand, corpus, solutions, feedback, objective)
                         .expect("Failed to create a new StdState"),
                 )),
