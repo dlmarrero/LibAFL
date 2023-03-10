@@ -32,6 +32,9 @@ ENV CUSTOM_QEMU_NO_BUILD=1
 WORKDIR /libafl
 RUN cargo vendor /libafl-cargo >> ~/.cargo/config.toml
 
+# Add any externally vendored crates
+ADD vendor.tgz /libafl-cargo
+
 RUN apt install -y cmake
 
 # When building fuzzers, use `cargo build --offline`
